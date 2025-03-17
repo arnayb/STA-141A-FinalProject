@@ -1,0 +1,1212 @@
+---
+title: "STA141A Project"
+author: "Arnay Bisht"
+date: "2025-03-17"
+output:
+  html_document: 
+    toc: true
+    toc_depth: 2
+    number_sections: true
+  word_document: default
+  pdf_document: default
+---
+```{css, echo=FALSE}
+body {
+  font-size: 18px;
+  line-height: 1.8;
+  max-width: 1100px;
+  margin: auto;
+}
+
+h1 {
+  font-size: 32px;
+  margin-top: 40px;
+}
+
+h2 {
+  font-size: 28px;
+  margin-top: 30px;
+}
+
+h3 {
+  font-size: 24px;
+  margin-top: 25px;
+}
+
+p {
+  font-size: 18px;
+  margin-bottom: 20px;
+}
+
+pre {
+  font-size: 16px;
+  line-height: 1.5;
+  padding: 15px;
+}
+
+.table {
+  font-size: 16px;
+  width: 100%;
+}
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Users/arnaybisht/Desktop/STA 141A/STA141AProject/Data/sessions")
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+knitr::opts_chunk$set(
+  echo = FALSE,          
+  warning = FALSE,        
+  message = FALSE,       
+  fig.width = 8,          
+  fig.height = 5          
+)
+```
+
+
+
+
+# Abstract
+
+This project analyzes the neural activity of mice as they perform decision-making tasks. By using a subset of data from a research study by Steinmetz et. al, we explore neural spike train data across 18 experimental sessions. The goal of our project is to develop a predictive model that classifies the success of decision-making by using neural activity data. We begin with exploratory data analysis across all sessions and trials, finding relationships and patterns within the data. To address heterogenity and the differences across sessions/trials, we integrate the data by extracting shared patterns. Finally, we apply PCA for dimension reduction and apply machine learning techniques for building our predictive model. <br>
+For predictive modeling, we utilized Logistic Regression and XGBoost, with XGBoost outperforming on the training data. The XGBoost model achieved an accuracy of 74.1% and an AUC score of 0.751 on the test data. Our results help us understand the application of machine learning techniques for understanding neural activity and cognitive processing. 
+
+
+# Introduction
+
+In Steinmetz et al. (2019), researchers analyzed the neural activity of mice as they worked through visual discrimination tasks. The experiments were conducted on 10 mice over 39 sessions. However, for the basis of this project, we leverage 18 sessions from the original data set from four mice (Cori, Frossman, Hence, and Lederberg).
+
+The intention of the research study was to explore how the mice respond to differences in visual stimuli. To explore this, the mice were presented with visual stimuli on two different screens (left side and right side). Each screen contained varying contrast levels: 0(no contrast), 0.25, 0.5, or 1. The mice were then required to turn a wheel towards the side with the higher contrast. Successful attempts resulted in a water reward. Conversely, failed attempts resulted in a penalty.
+
+
+# Exploratory data analysis <a id="eda"></a>
+
+```{r}
+# Load the data 
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('/Users/arnaybisht/Desktop/STA 141A/STA141AProject/Data/sessions/session', i, '.rds',sep=''))
+}
+```
+ 
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+
+#Load our libraries
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(magick)
+library(ggplot2)
+library(plotly)
+library(pROC)
+library(caret)
+library(randomForest)
+library(pROC)
+library(xgboost)
+library(caret)
+library(reshape2)
+```
+
+To begin, let us first identify the variables available for each trial. By using names(session[1]), we can clearly see the variables present in this session.
+```{r}
+names(session[[1]])
+```
+1.) `Feedback type`: Type of the feedback given by the task. 1 for success, -1 for failure <br>
+2.) `Contrast_left`: Contrast of the left stimulus <br>
+3.) `Contrast_right`: Contrast of the right stimulus <br>
+4.) `Time`: Centers of the time bins for `spks`  <br>
+5.) `Spks`: Numbers of spikes of neurons in the visual cortex in time bins defined in `time`. <br>
+6.) `Brain_area`: Area of the brain where each neuron contains <br>
+7.) `date_exp``: Date of when the experiments took place
+
+## Session Metadata Summary & Overview of Data Structure
+
+To better understand the data set, we extract session-level meta data, which includes important information like mouse names, experiment dates, brain regions, neurons, trials, and success rates.
+```{r}
+#checks the length of the session list, which allows us to see the number of sessions(18)
+n.session=length(session)
+
+
+#create a table that stores information about the sessions
+meta <- tibble(
+  Mouse_Name = rep('name',n.session),
+  Experiment_Date =rep('dt',n.session),
+  Brain_Areas = rep(0,n.session),
+  Neurons = rep(0,n.session),
+  Trials = rep(0,n.session),
+  Success_Rate = rep(0,n.session),
+  Session_number = 1:n.session
+)
+
+#Create a loop that loops through each of the sessions
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name; #Stores the mouse name
+  meta[i,2]=tmp$date_exp; #the date of the experiment recorded
+  meta[i,3]=length(unique(tmp$brain_area)); #counting unique brain regions.
+  meta[i,4]=dim(tmp$spks[[1]])[1]; #counting the number of neurons observed. Since spks contains the neurons as rows, we extract the count of rows
+  meta[i,5]=length(tmp$feedback_type); #Storing total # of trials. Each trial has a feedback_type so we store its length
+  
+  #Provides the success rate. 
+  #Feedback type is given as -1(failure) or 1(success). To normalize it between 0 and 1, we add the feedback type to 1 and divide it by 2. It allows us to view the average success rate for the mouse for the given trial given the average feedback type.
+  meta[i,6]=mean(tmp$feedback_type+1)/2; 
+}
+
+
+#printing the table
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2, caption = 'Table 1: Metadata Summary Across Sessions') 
+```
+
+
+By compiling the data into a metadata summary, we can gain insights into each session.<br>
+
+**Key Observations**: <br>
+
+**Variation in Success Rate**: Success rate greatly varies among the four mice. Lederberg achieves the highest(0.69-0.81) and Cori the lowest(0.61-0.66). <br>
+**Brain Region Differences**: The number of recorded neurons and brain areas various across the sessions. <br>
+**Trial Counts**: Some sessions include significantly more trials compared to others. <br>
+
+To summarize, we notice how the data structure greatly differs across the sessions. <br>
+
+While the metadata gives us important insights into general trends, it does not showcase what happens at the level of individual trials. To address this, we will next explore how brain regions respond to tasks during a single trial.
+
+
+## Activity Analysis in a Single Trial of a Session  <a id="eda"></a>
+
+### Examining Session 3, Trial 17
+
+To provide some context, 'spikes' are electrical signals produced by neurons that represent neural activity. As a result, a higher spike count is an indicator of higher neural activity. <br>
+
+Here, we will analyze a single session and trial(Session 3, Trial 17). This will help us understand neural activity at a finer scale, exploring whether specific brain regions exhibit higher activity when a decision is made.
+
+```{r}
+#Selecting a particular session and trial for analysis
+i.s = 3  # Selecting Session 3
+i.t = 17  # Select Trial 17
+
+#Extracting the spike data for this particular trial
+#spk.trial is a matrix with rows representing neurons, extracting spike train data for Trial 17
+spk.trial = session[[i.s]]$spks[[i.t]]
+
+#create area variable, which extracts the brain areas of neurons corresponding to the session
+#extracts brain areas corresponding to the neurons
+area = session[[i.s]]$brain_area
+
+#calculating the number of spikes for each neuron, for this specific trial
+#use sum() function to count the total # of spikes across neurons in same region
+spk.count=apply(spk.trial,1,sum)
+
+
+#DataFrame for Brain area activity
+trial_data <- data.frame(Brain_Area = area, Spike_Count = spk.count)
+
+# summarize
+trial_summary <- trial_data %>%
+  group_by(Brain_Area) %>%
+  summarize(Average_Spikes = mean(Spike_Count))
+
+# Display Table
+kable(trial_summary, format = "markdown", caption = "Average Spikes per Brain Area in Session 3, Trial 17")
+
+```
+
+Visualizing Neural Activity Across Brain Areas
+```{r}
+# Bar plot for visualizing
+ggplot(trial_summary, aes(x = reorder(Brain_Area, -Average_Spikes), y = Average_Spikes, fill = Brain_Area)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Neural Activity per Brain Area (Session 3, Trial 17)",
+    x = "Brain Area",
+    y = "Average Spike Count",
+    fill = "Brain Region"  
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right" 
+  )
+```
+<br> This analysis helps us identify the most active brain regions within a single trial(Session 3, Trial 17). 
+Based on the table and visualizations, regions like MRN (6.24) and LP (5) indicate a higher average spike count. This shows how these brain regions likely play a higher role in decision-making cognitive processing.
+
+
+## Neural Activity and Success Rate Trends Across Sessions + Mice 
+
+We previously performed an analysis within one trial, but now we want to explore whether those findings and patterns hold across sessions.
+By analyzing neural activity & success rate trends across all sessions, we can enable a comparative analysis of the mice.
+```{r}
+# create a summary table for the sessions
+session_summary <- tibble(
+  session_i = 1:n.session, 
+  contrast_left = sapply(session, function(s) mean(s$contrast_left, na.rm = TRUE)),
+  contrast_right = sapply(session, function(s) mean(s$contrast_right, na.rm = TRUE)),
+  mouse_name = sapply(session, function(s) s$mouse_name),
+  Avg_Spike_Count = rep(0, n.session),
+  Success_Rate = rep(0, n.session) 
+)
+
+# Creating a for loop, looping through the sessions in order to calculate the average spike count and success rate
+for(i in 1:n.session) {
+  session_data = session[[i]]  
+  # Extracting all of the spike data across trials and calculating the mean spike count
+  total_spikes = unlist(lapply(session_data$spks, function(trial) rowSums(trial)))
+  
+  # Store the mean spike count for the session
+  session_summary[i, "Avg_Spike_Count"] = mean(total_spikes, na.rm = TRUE)
+  
+  # calculating success rate
+  session_summary[i, "Success_Rate"] = mean((session_data$feedback_type + 1) / 2, na.rm = TRUE)
+}
+
+
+
+#Data visualization
+# Plotting the Neural Activity Trends Across Sessions w/ plotly
+
+mouse_colors <- c("Cori" = "red", "Forssmann" = "blue", "Hench" = "green", "Lederberg" = "purple")
+
+p1 <- ggplot(session_summary, aes(x = session_i, y = Avg_Spike_Count, color = mouse_name, text = paste("Mouse:", mouse_name, "<br>Session:", session_i, "<br>Avg Spikes:", round(Avg_Spike_Count, 2)))) + geom_line(linewidth = 1) +  
+  geom_point(size = 3) +  
+  scale_color_manual(values = mouse_colors) + 
+  labs(title = "Neural Activity Trends Across Sessions",
+       x = "Session Number", 
+       y = "Average Spike Count",
+       color = "Mouse") +  
+  theme_minimal()
+
+# Convert to interactive plot via plotly
+plotly_1 <- ggplotly(p1, tooltip = "text")
+
+
+
+# Plotting Success Rate Trends Across Sessions 
+p2 <- ggplot(session_summary, aes(x = session_i, y = Success_Rate, color = mouse_name, text = paste("Mouse:", mouse_name, "<br>Session:", session_i,
+                                               "<br>Success Rate:", round(Success_Rate, 2)))) +
+  geom_line(linewidth = 1) +  
+  geom_point(size = 3) +  
+  scale_color_manual(values = mouse_colors) +  
+  labs(title = "Success Rate Trends Across Sessions",
+       x = "Session Number", 
+       y = "Success Rate",
+       color = "Mouse") +  
+  theme_minimal()
+
+# Convert to interactive plot via plotly
+plotly_2 <- ggplotly(p2, tooltip = "text")
+
+plotly_1
+plotly_2
+```
+
+<br> **Neural Activity across Sessions**: <br>
+By analyzing the scatter plot, we can see fluctuations in average spike counts across the sessions. This suggests that there is not a clear relationship between progression of sessions and neural activity. <br>
+
+**Success Rate Across Sessions** <br>
+The success rate trends plot reveal a **strong, positive correlation between session number and success rate**. <br>
+
+A possible explanation of this could be due to reinforcement learning. Upon continued exposure to the same task, the mice might have adapted, improving decision-making abilities. For example, "Cori" displayed gradual improvement in success rate over its three sessions, with a similar trend being displayed across the other mice, as later sessions show higher success rates. 
+
+
+## Is Higher Neural Activity Associated With Better Performance?
+
+I was interested in exploring whether higher average spike counts plays a significant role in the decision-making of mice. To explore this, I used Pearson's correlation to quantify the relationship between neural activity levels and success rate. 
+```{r}
+# Calculating the correlation b/n Avg_Spike_Count and Success_Rate by utilizing Pearson's Correlation value
+correlation_value <- cor(session_summary$Avg_Spike_Count, session_summary$Success_Rate, method = "pearson", use = "complete.obs")
+
+# Printing the correlation result
+print(paste("Pearson Correlation between Average Spike Count and Success Rate:", round(correlation_value, 3)))
+
+
+
+# We categorize Spike Counts into Low, Medium, and High groups, using percentile thresholds
+session_summary <- session_summary %>%
+  mutate(Spike_Category = case_when(
+    Avg_Spike_Count < quantile(Avg_Spike_Count, 0.33) ~ "Low",
+    Avg_Spike_Count < quantile(Avg_Spike_Count, 0.66) ~ "Medium",
+    TRUE ~ "High"
+  ))
+
+# Comparing Box plots, Visualizing
+ggplot(session_summary, aes(x = Spike_Category, y = Success_Rate, fill = Spike_Category)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Success Rate Across Different Neural Activity Levels",
+       x = "Neural Activity Level",
+       y = "Success Rate") +
+  theme_minimal()
+
+```
+
+**Interpreting the Graph** <br>
+• **X-axis**: Representing Neural Activity Level(Low, Medium, High). We categorized the activity levels by utilizing percentile thresholds. <br>
+• **Y-axis**: Success Rate <br>
+
+**Insights:** <br>
+• Pearson correlation = 0.005 → No strong correlation. <br>
+• The boxplots show little variation of success rate across the different neural activity levels. <br>
+• The results suggest that neural activity alone is not a strong predictor of success rate. <br>
+
+
+
+## Does Contrast Difference Impact Success Rate
+
+In this step, we aim to explore the relationship between contrast differences in visual stimuli and success rate. <br>
+
+As defined previously, the contrast values vary (0, 0.25, 0.5, 1) and the mice are required to choose a side with the higher contrast. Specifically, we are interested in exploring whether a greater difference in contrast level(for example, contrast level of 1 in right side and 0 in left, yielding difference of 1) actually leads to a higher success rate.
+
+```{r}
+
+# Creating contrast_analysis to summarize relationship b/n contrast and success rate
+#creating a contrast_differnence variable quantifying differnence in left and right contrast
+contrast_analysis <- session_summary %>%
+  mutate(contrast_difference = contrast_left - contrast_right)
+
+#Visualizing relationship
+ggplot(contrast_analysis, aes(x = contrast_difference, y = Success_Rate)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Relationship b/n Contrast Difference and Success Rate",
+       x = "Left Contrast - Right Contrast",
+       y = "Success Rate") +
+  theme_minimal()
+
+
+```
+<br>Interpreting about the graph:<br>
+**X-axis (Left Contrast- Right Contrast)**: Measures the difference in contrast stimuli presented to the left and right screens.<br>
+
+**Y-axis (Success rate)** : Proportion of correct decisions performed by the mice. <br>
+
+We fit a trend line to display the trend. <br>
+
+```{r}
+# Compute Pearson correlation
+correlation <- cor(contrast_analysis$contrast_difference, contrast_analysis$Success_Rate, method = "pearson")
+
+# Print the result
+print(paste("Pearson Correlation between Contrast Difference and Success Rate:", round(correlation, 4)))
+
+```
+
+
+**Insights:**<br>
+The visualization indicates a weakly sloped trend line with lots of random scatter. In addition, we computed a weak positive Pearson's correlation value of 0.082. This insight suggests that contrast level is not the sole determining factor in decision-making. 
+
+A potential external factor that may influence decision-making are **decision making biases**. A mouse might develop habits or biases, such as continuously selecting one side regardless of differences in contrasts. For instance, if the mouse chose left one trial and it was successful, they might choose left again regardless of the contrast level.
+
+
+
+## Adressing and Exploring Homogenity/Heterogenity in Mice
+
+```{r}
+ggplot(session_summary, aes(x = mouse_name, y = Avg_Spike_Count, fill = mouse_name)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Neural Activity Across Mice",
+       x = "Mouse", y = "Average Spike Count") +
+  theme_minimal()
+
+```
+
+The plots indicate variability in average spike count across the four mice. Cori exhibits the highest median spike count, with Frossman exhibiting the lowest.
+
+
+<br>
+Next, we will create an integrated tibble containing data from all sessions and trials. <br>
+Each row in the integrated tibble corresponds to a single trial, consisting of: <br>
+1.) Session metadata: session number, mouse name <br>
+2.) Trial-specific features: contrast levels, feedback type <br>
+3.) Neural Activity Data: average spike count over time bins <br>
+
+This will be used for PCA, Data Integration, and Predictive Modeling.
+```{r}
+
+bin_names <- paste0("bin", seq_len(ncol(session[[1]]$spks[[1]])))  
+
+# Create full function tibble by extracting relevant data
+full_function_tibble <- map_dfr(seq_along(session), function(i) {
+  session_data <- session[[i]]
+  
+  if (is.null(session_data) || !"spks" %in% names(session_data)) return(tibble())  
+  
+  tibble(
+    session_id = i,
+    mouse_name = session_data$mouse_name,
+    trial_id = seq_along(session_data$spks),
+    contrast_left = session_data$contrast_left,
+    contrast_right = session_data$contrast_right,
+    feedback_type = session_data$feedback_type,
+    contrast_diff = abs(session_data$contrast_left - session_data$contrast_right), 
+    success = as.numeric(session_data$feedback_type == 1)  
+  ) %>%
+    bind_cols(as_tibble(do.call(rbind, lapply(session_data$spks, colMeans))) %>% setNames(bin_names))
+})
+
+full_function_tibble
+```
+
+
+## PCA 
+We will now apply PCA in order to reduce the dimensionality of the data set.
+Implementing PCA will help us capture the most important patterns in the data and visualize variability across sessions and mice. For this first analysis, we will reduce the data into two components: PC1 and PC2.
+```{r}
+# Select only numerical spike bin columns for PCA
+pca_input <- full_function_tibble %>%
+  select(all_of(bin_names))  # Select only spike rate bins
+
+# Standardize for PCA
+pca_result <- prcomp(pca_input, center = TRUE, scale. = TRUE)
+
+# Converting the results into data frame
+pca_df <- as_tibble(pca_result$x) %>%
+  mutate(session_id = full_function_tibble$session_id, mouse_name = full_function_tibble$mouse_name)
+
+# PCA Visualization by Session
+ggplot(pca_df, aes(x = PC1, y = PC2, color = as.factor(session_id))) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC1 vs PC2 (Session)", color = "Session ID") +
+  theme_minimal()
+
+# PCA Visualization by Mouse
+ggplot(pca_df, aes(x = PC1, y = PC2, color = mouse_name)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC1 vs PC2 (Mouse)", color = "Mouse Name") +
+  theme_minimal()
+
+
+```
+<br>**Interpretations of PCA and Acknowledging Limitations**<br>
+
+Earlier in EDA, we analyzed variability in neural spike activity across mice. However, in this analysis, we see **significant overlap in PC1 and PC2**, which may suggest that dimensionality is not strongly captured in these two dimensions.
+
+Let us explore PC3 vs PC4 to see if the overlapping persists, or if we can analyze more variability across sessions/mice.<br>
+```{r}
+# Convering to data frame
+pca_df <- as_tibble(pca_result$x) %>%
+  mutate(session_id = full_function_tibble$session_id, mouse_name = full_function_tibble$mouse_name)
+
+# Visualization PC3 vs PC4 (Session)
+ggplot(pca_df, aes(x = PC3, y = PC4, color = as.factor(session_id))) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC3 vs PC4 (Session)", color = "Session ID") +
+  theme_minimal()
+
+# Visualization PC3 vs PC4 (Mouse)
+ggplot(pca_df, aes(x = PC3, y = PC4, color = mouse_name)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC3 vs PC4 (Mouse)", color = "Mouse Name") +
+  theme_minimal()
+
+```
+<br> Similar to the PC1 vs PC2 plot, the PC3 vs PC4 continues to display overlapping of data points. <br>
+
+
+**Similarities and Consistency Across Sessions**: <br>
+- Lots of overlap and mixing of session data points. Suggests that experimental conditions were relatively consistent across sessions + trials.
+
+**Similarities across Mice**: <br>
+- Rather than distinct clusters for mice, we notice overlap. This suggests a shared neural response across the four subjects, indicating that their cognitive processing may be influenced due to common experimental conditions.
+
+
+
+# Data Integration 
+In this step, our goal is to incorporate the data from different sessions, noting the challenge of heterogenity in neural data across the sessions. As analyzed in EDA, spike data can strictly vary among sessions. We need to integrate the data across the multiple sessions and to reduce session variability and enhance model generalizability.
+
+```{r}
+
+# selecting the predictive features 
+predictive_features <- c("session_id", "trial_id", "contrast_left", "contrast_right", "contrast_diff", bin_names)
+
+
+y <- as.factor(full_function_tibble$success)
+
+# preparing the final data set for modeling
+predictive_data <- full_function_tibble %>%
+  select(all_of(predictive_features)) %>%
+  mutate(trial_id = as.numeric(trial_id))  # Convert trial_id to numeric
+
+# converting to matrix 
+X <- model.matrix(~., data = predictive_data)
+
+head(predictive_data)
+
+
+```
+
+We selected important predictive features including: "session_id", "trial_id", "contrast_left", "contrast_right", "contrast_diff", bin_names. The contrast levels + contrast difference were included due to our EDA, which initially suggested that higher contrast differences may influence success rate. However, further analysis revealed a weak, positive correlation between contrast differences and success rate, which indicates that contrast level is not the sole determining factor in decision-making. For those reasons, we also considered additional neural features including bin_names. Our integrated model leverages both task-based(contrast level) and neural-based(bin_names) data to enhance predictive performance. <br>
+
+Each row in the integrated data set refers to a single trial, ensuring that the session and trial data are aligned for predictive modeling.<br>
+
+
+# Predictive Modeling
+Now that we have integrated our data, we are ready to build our predictive model.
+
+I will utilize two types of predictive modeling to predict feedback type: Logistic Regression and XGBoost.
+
+## Logistic Regression Model
+We will first use Logistic Regression to create our first model. Logistic Regression is a supervised learning technique used to predict a binary outcome. In this case, we are predicting feedback type(True = Mouse performed Correctly, False = Mouse performed incorrectly).
+```{r}
+
+# We use logistic regression due to binary classification (success vs failure)
+
+# Split into Training and Testing, ( 80-20 split)
+set.seed(123)
+train_index <- createDataPartition(y, p = 0.8, list = FALSE)
+
+
+X_train <- as.data.frame(X[train_index, ])
+y_train <- y[train_index]
+X_test <- as.data.frame(X[-train_index, ])
+y_test <- y[-train_index]
+
+# Logistic regression model
+log_model <- glm(y_train ~ ., data = X_train, family = "binomial")
+
+
+#summary(log_model)
+
+# Predictions
+predictions <- predict(log_model, newdata = X_test, type = "response")
+predicted_labels <- ifelse(predictions > 0.5, 1, 0)
+
+# Accuracy
+accuracy <- mean(predicted_labels == y_test)
+print(paste("Model Accuracy:", round(accuracy, 4)))
+
+# ROC Curve and AUC
+roc_curve <- roc(y_test, predictions)
+plot(roc_curve, main = "ROC Curve")
+auc(roc_curve)
+
+misclassification_rate <- 1 - accuracy
+print(paste("Misclassification Rate:", round(misclassification_rate, 4)))
+```
+**Results of Logistic Regression Model Training Data** <br>
+- **Model Accuracy**: 0.707 <br>
+- **AUC Score**: 0.676 <br>
+- **Misclassification Rate**: 0.293 <br>
+
+We plotted an ROC Curve, which aims to display the True Positive Rate against the False Positive Rate. The horizontal line in the curve represents a random classifier(50% accuracy). The ROC Curve for Logistic Regression displays a moderately strong classification as the curve is slightly above the random classifier.
+
+Overall, while the Logistic Regression performed relatively well on the training data, we want to explore whether we can achieve higher performance with a second model.
+
+## XGBoost
+We will now create our second predictive model, a XGBoost Model. XGBoost is a powerful boosting-based machine learning model, particularly used for numerical data. It utilizes decision trees for base learning, sequentially combining them to improve the model's performance.
+```{r}
+#Converting data to matrix format
+X_train_mat <- as.matrix(X_train)
+X_test_mat <- as.matrix(X_test)
+
+# converting target variable to numeric 
+y_train_xgb <- as.numeric(as.character(y_train))
+y_test_xgb <- as.numeric(as.character(y_test))
+
+xgb_model <- xgboost(data = X_train_mat, 
+                     label = y_train_xgb, 
+                     max_depth = 6, 
+                     eta = 0.1, 
+                     nrounds = 20, gamma = 1, lambda = 2, alpha = 1,
+                     objective = "binary:logistic",
+                     eval_metric = "logloss",
+                     verbose = 1)
+
+
+train_predictions <- predict(xgb_model, X_train_mat)
+
+train_pred_labels <- ifelse(train_predictions > 0.5, 1, 0)
+
+# Compute Accuracy
+train_accuracy <- mean(train_pred_labels == y_train_xgb)
+
+# Compute Misclassification Rate
+train_misclassification <- 1 - train_accuracy
+
+
+print(paste("XGBoost Model Accuracy:", round(train_accuracy, 4)))
+print(paste("XGBoost Misclassification Rate:", round(train_misclassification, 4)))
+
+# computing the ROC & AUC
+train_roc_curve <- roc(y_train_xgb, train_predictions)
+train_auc <- auc(train_roc_curve)
+
+# AUC Score
+print(paste("XGBoost Model AUC:", round(train_auc, 4)))
+
+#ROC Curve
+plot(train_roc_curve, main = "XGBoost ROC Curve on Training Data")
+
+```
+<br> **Results of XGBoost Model On Training Data** <br>
+- **Model Accuracy**: 0.838 <br>
+- **AUC Score**: 0.927 <br>
+- **Misclassification Rate**: 0.162 <br>
+
+The ROC Curve, which aims to plot the True Positive Rate against the False Positive Rate, displays strong classification as the curve is in the upper left corner. The high AUC score of 0.927 supports this insight, showing that the XGBoost model indicates very strong discrimination.<br>
+
+## Interpretations + Insights of Predictive Modeling
+The XGBoost model demonstrated strong performance on the training data, significantly outperforming the Logistic Regression Model. Its high AUC score, low misclassification rate, and high model accuracy indicates that it has very strong discriminatory power. 
+However, its superior performance raises concerns of model overfitting. Overfitting occurs when the model learns patterns that are very specific to the training data, leading to high training performance but poorer performance on new data.
+
+We will now apply this model to the test data, comparing its results to the training data. <br>
+
+
+# Prediction Performance on Test Sets
+The test data contains two test sets (test1.rds and test2.rds). Each test set contains 100 randomly selected trials from Session 1 and Session 18.
+```{r}
+testing = list()
+#Use a loop to load in the testing data
+for(i in 1:2){
+  testing[[i]] <- readRDS(paste0("~/Downloads/test (1)/test", i, ".rds"))
+}
+```
+
+```{r}
+#Extract the test data to a data frame
+test_data <- map_dfr(seq_along(testing), function(i) {
+  tibble(
+    session_id = i,
+    contrast_left = testing[[i]]$contrast_left,
+    contrast_right = testing[[i]]$contrast_right,
+    contrast_diff = abs(testing[[i]]$contrast_left - testing[[i]]$contrast_right),
+    feedback_type = testing[[i]]$feedback_type
+  ) %>%
+    bind_cols(as_tibble(do.call(rbind, lapply(testing[[i]]$spks, colMeans))) %>% 
+                setNames(paste0("bin", seq_len(ncol(testing[[i]]$spks[[1]])))))
+})
+
+test_data$trial_id <- seq_len(nrow(test_data))  # Add trial ID
+X_new_test <- model.matrix(~., data = test_data %>% select(-feedback_type)) 
+y_new_test <- as.factor(test_data$feedback_type == 1)  # Convert success/fail
+
+```
+
+## Prediction on the XGBoost Model
+Based on the results of the training data, we will select the XGBoost for evaluation on the testing data.
+```{r}
+# Predictions on test data
+test_predictions <- predict(xgb_model, X_test_mat)
+
+# We will convert probabilities to binary label
+test_pred_labels <- ifelse(test_predictions > 0.5, 1, 0)
+
+# Compute Accuracy + the misclassification rate
+test_accuracy <- mean(test_pred_labels == y_test_xgb)
+
+test_misclassification <- 1 - test_accuracy
+
+print(paste("XGBoost Model Accuracy on the Test Set:", round(test_accuracy, 4)))
+print(paste("XGBoost Misclassification Rate on the Test Set:", round(test_misclassification, 4)))
+
+# Compute ROC & AUC
+test_roc_curve <- roc(y_test_xgb, test_predictions)
+test_auc <- auc(test_roc_curve)
+
+# Print AUC Score, ROC Curve
+print(paste("XGBoost Model AUC on Test Set:", round(test_auc, 4)))
+
+plot(test_roc_curve, main = "ROC Curve : XGBoost on Test Data")
+
+
+```
+<br> **Results of XGBoost Model On Test Data** <br>
+- **Model Accuracy**: 0.741 <br>
+- **AUC Score**: 0.751 <br>
+- **Misclassification Rate**: 0.259 <br>
+
+Overall, the model performs well, yielding an **accuracy of 74.1%**. However, we notice a significant drop in model accuracy when compared to the training data(accuracy of 83.8%). In addition, the AUC score decreases from 0.927(training data) to 0.751(test data).  <br>
+This drop in performance suggests that the predictive model may have learned session-specific patterns rather than generalizable decision-making features. In addition, the complex structure of XGBoost(many trees and hyperparameters) may it allow it to fit training closely but struggle with new data. <br>
+
+Regardless, the model still demonstrates strong predictive power on the test. The ROC curve supports this insight, showing how the model can distinguish between positive and negative cases. 
+
+
+Let's use a Confusion matrix to show how well the predictions compare to the actual results. We will create a heatmap of the confusion matrix, allowing us to visualize its reliability.
+```{r}
+confusion_matrix <- confusionMatrix(factor(test_pred_labels), factor(y_test_xgb))
+
+confusion_table <- as.data.frame(confusion_matrix$table)
+
+#for more clarity lets rename the column names
+colnames(confusion_table) <- c("Predicted", "Actual", "Count")
+
+#heat map for visualization
+# Create the heatmap
+ggplot(data = confusion_table, aes(x = Actual, y = Predicted, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "black", size = 5) +  
+  scale_fill_gradient(low = "white", high = "blue") +  # Gradient color
+  labs(title = "Confusion Matrix Heatmap", x = "Actual", y = "Predicted") +
+  theme_minimal()
+```
+<br> **Interpreting the Confusion Matrix Heatmap** <br>
+**X-axis**: Representing the true data values <br>
+**Y-axis**: Representing model predictions <br>
+
+**Top-right of the heat map**: True Positives, 678 cases. <br>
+**Top-left of the heat map**: False Positives, 220 cases. <br>
+**Bottom-right of the heat map**: True Negatives, 43 cases. <br>
+**Bottom-left of the heat map**: False Negatives, 74 cases. <br>
+
+
+# Discussion
+
+In this report, our aim was to create a predictive model for the decision-making of mice. We began with exploratory data analysis, where we explored key insights across the sessions and trials. 
+Through data integration we identified and selected important predictive features, which were later used in predictive modeling. 
+For building our model, we utilized two predictive modeling techniques: Logistic Regression and XGBoost. The XGBoost model significantly outperformed the Logistic Regression Model on the training data, so it was applied to to the test data. It achieved an accuracy of 74.1%, indicating strong predictive capability. <br>
+The Confusion matrix provided important insights into our model performance, indicating a significant number of false positives(220) and false negatives(74). This suggests a room for improvement in the model's accuracy, particularly for identifying unsucessful trials. <br>
+
+
+**Important Findings from our Analysis** <br>
+•  Neural Activity alone was not strongly correlated with success rates <br>
+•  Differences in contrast stimuli displayed a weak correlation with success rate, indicating that mice were not strictly     depending on the strength of visual stimuli for decision-making <br>
+•  Success Rate generally increased over sessions for each mouse. <br>
+•  PCA indicated overlap of neural response patterns across mice + sessions. This suggests shared cognitive processing functionalities despite differences at an individual level. <br>
+
+Throughout our project, we faced challenges in addressing complex differences across sessions and trials. Through data integration, we were able 
+Model overfitting emerged as a significant challenge throughout our report, indicated by the drop in performance between  training(accuracy = 83.8%, AUC = 0.927) and test data(accuracy = 74.1%, AUC = 0.751). Bridging the gap between training and test performance deemed challenging, suggesting that our model may have learned session-specific patterns. <br>
+
+The results of our findings can be applied to computational psychology research for understanding neural activity. Through exploring the mechanisms that impact decision-making, we can provide interesting insights into the cognitive functions of animals and humans. <br>
+
+
+
+
+# Acknowledgements
+Utilized Chat-GPT for understanding code and debugging errors. In addition, recieved AI help for formatting code to HTML format(appendix)  <br>
+Lecture + Discussion Notes <br>
+Consulting Session Code <br>
+
+# Appendix: R Code
+```{r appendix-data-loading, echo=TRUE, eval=FALSE}
+# Load the data 
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('/Users/arnaybisht/Desktop/STA 141A/STA141AProject/Data/sessions/session', i, '.rds',sep=''))
+}
+
+# Libraries Used
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(magick)
+library(ggplot2)
+library(plotly)
+library(pROC)
+library(caret)
+library(randomForest)
+library(pROC)
+library(xgboost)
+library(caret)
+library(reshape2)
+
+# Create a table that stores information about the sessions
+n.session=length(session)
+
+meta <- tibble(
+  Mouse_Name = rep('name',n.session),
+  Experiment_Date =rep('dt',n.session),
+  Brain_Areas = rep(0,n.session),
+  Neurons = rep(0,n.session),
+  Trials = rep(0,n.session),
+  Success_Rate = rep(0,n.session),
+  Session_number = 1:n.session
+)
+
+# Create a loop that loops through each of the sessions
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name; # Stores the mouse name
+  meta[i,2]=tmp$date_exp; # the date of the experiment recorded
+  meta[i,3]=length(unique(tmp$brain_area)); # counting unique brain regions
+  meta[i,4]=dim(tmp$spks[[1]])[1]; # counting the number of neurons observed
+  meta[i,5]=length(tmp$feedback_type); # Storing total # of trials
+  meta[i,6]=mean(tmp$feedback_type+1)/2; # Provides the success rate
+}
+
+# Printing the table
+kable(meta, format = "html", table.attr = "class='table table-striped'", digits=2, caption = 'Table 1: Metadata Summary Across Sessions')
+
+#Trial analysis
+# select a particular session and trial for analysis
+i.s = 3  # Selecting Session 3
+i.t = 17  # Select Trial 17
+
+# Extracting the spike data for this particular trial
+spk.trial = session[[i.s]]$spks[[i.t]]
+
+# Create area variable, which extracts the brain areas of neurons corresponding to the session
+area = session[[i.s]]$brain_area
+
+# Calculating the number of spikes for each neuron, for this specific trial
+spk.count = apply(spk.trial, 1, sum)
+
+# DataFrame for Brain area activity
+trial_data <- data.frame(Brain_Area = area, Spike_Count = spk.count)
+
+# Summarize
+trial_summary <- trial_data %>%
+  group_by(Brain_Area) %>%
+  summarize(Average_Spikes = mean(Spike_Count))
+
+# Display Table
+kable(trial_summary, format = "markdown", caption = "Average Spikes per Brain Area in Session 3, Trial 17")
+
+# Bar plot for visualizing
+ggplot(trial_summary, aes(x = reorder(Brain_Area, -Average_Spikes), y = Average_Spikes, fill = Brain_Area)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Neural Activity per Brain Area (Session 3, Trial 17)",
+    x = "Brain Area",
+    y = "Average Spike Count",
+    fill = "Brain Region"  
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right" 
+  )
+
+# Create a summary table for the sessions
+session_summary <- tibble(
+  session_i = 1:n.session, 
+  contrast_left = sapply(session, function(s) mean(s$contrast_left, na.rm = TRUE)),
+  contrast_right = sapply(session, function(s) mean(s$contrast_right, na.rm = TRUE)),
+  mouse_name = sapply(session, function(s) s$mouse_name),
+  Avg_Spike_Count = rep(0, n.session),
+  Success_Rate = rep(0, n.session) 
+)
+
+# Creating a for loop, looping through the sessions to calculate the average spike count and success rate
+for(i in 1:n.session) {
+  session_data = session[[i]]  
+  # Extracting all of the spike data across trials and calculating the mean spike count
+  total_spikes = unlist(lapply(session_data$spks, function(trial) rowSums(trial)))
+  
+  # Store the mean spike count for the session
+  session_summary[i, "Avg_Spike_Count"] = mean(total_spikes, na.rm = TRUE)
+  
+  # Calculating success rate
+  session_summary[i, "Success_Rate"] = mean((session_data$feedback_type + 1) / 2, na.rm = TRUE)
+}
+
+# Data visualization - Neural Activity Trends
+mouse_colors <- c("Cori" = "red", "Forssmann" = "blue", "Hench" = "green", "Lederberg" = "purple")
+
+p1 <- ggplot(session_summary, aes(x = session_i, y = Avg_Spike_Count, color = mouse_name, 
+             text = paste("Mouse:", mouse_name, "<br>Session:", session_i, "<br>Avg Spikes:", round(Avg_Spike_Count, 2)))) + 
+  geom_line(linewidth = 1) +  
+  geom_point(size = 3) +  
+  scale_color_manual(values = mouse_colors) + 
+  labs(title = "Neural Activity Trends Across Sessions",
+       x = "Session Number", 
+       y = "Average Spike Count",
+       color = "Mouse") +  
+  theme_minimal()
+
+# Convert to interactive plot via plotly
+plotly_1 <- ggplotly(p1, tooltip = "text")
+
+# Plotting Success Rate Trends Across Sessions 
+p2 <- ggplot(session_summary, aes(x = session_i, y = Success_Rate, color = mouse_name, 
+             text = paste("Mouse:", mouse_name, "<br>Session:", session_i, "<br>Success Rate:", round(Success_Rate, 2)))) +
+  geom_line(linewidth = 1) +  
+  geom_point(size = 3) +  
+  scale_color_manual(values = mouse_colors) +  
+  labs(title = "Success Rate Trends Across Sessions",
+       x = "Session Number", 
+       y = "Success Rate",
+       color = "Mouse") +  
+  theme_minimal()
+
+# Convert to interactive plot via plotly
+plotly_2 <- ggplotly(p2, tooltip = "text")
+
+plotly_1
+plotly_2
+
+# Calculating the correlation between Avg_Spike_Count and Success_Rate using Pearson's Correlation
+correlation_value <- cor(session_summary$Avg_Spike_Count, session_summary$Success_Rate, method = "pearson", use = "complete.obs")
+
+# Printing the correlation result
+print(paste("Pearson Correlation between Average Spike Count and Success Rate:", round(correlation_value, 3)))
+
+# We categorize Spike Counts into Low, Medium, and High groups, using percentile thresholds
+session_summary <- session_summary %>%
+  mutate(Spike_Category = case_when(
+    Avg_Spike_Count < quantile(Avg_Spike_Count, 0.33) ~ "Low",
+    Avg_Spike_Count < quantile(Avg_Spike_Count, 0.66) ~ "Medium",
+    TRUE ~ "High"
+  ))
+
+# Comparing Box plots, Visualizing
+ggplot(session_summary, aes(x = Spike_Category, y = Success_Rate, fill = Spike_Category)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Success Rate Across Different Neural Activity Levels",
+       x = "Neural Activity Level",
+       y = "Success Rate") +
+  theme_minimal()
+
+# Creating contrast_analysis to summarize relationship between contrast and success rate
+contrast_analysis <- session_summary %>%
+  mutate(contrast_difference = contrast_left - contrast_right)
+
+# Visualizing relationship
+ggplot(contrast_analysis, aes(x = contrast_difference, y = Success_Rate)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Relationship between Contrast Difference and Success Rate",
+       x = "Left Contrast - Right Contrast",
+       y = "Success Rate") +
+  theme_minimal()
+
+# Compute Pearson correlation
+correlation <- cor(contrast_analysis$contrast_difference, contrast_analysis$Success_Rate, method = "pearson")
+
+# Print the result
+print(paste("Pearson Correlation between Contrast Difference and Success Rate:", round(correlation, 4)))
+
+# Boxplot of neural activity across mice
+ggplot(session_summary, aes(x = mouse_name, y = Avg_Spike_Count, fill = mouse_name)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Neural Activity Across Mice",
+       x = "Mouse", y = "Average Spike Count") +
+  theme_minimal()
+
+# Create full function tibble by extracting relevant data
+bin_names <- paste0("bin", seq_len(ncol(session[[1]]$spks[[1]])))
+
+full_function_tibble <- map_dfr(seq_along(session), function(i) {
+  session_data <- session[[i]]
+  
+  if (is.null(session_data) || !"spks" %in% names(session_data)) return(tibble())  
+  
+  tibble(
+    session_id = i,
+    mouse_name = session_data$mouse_name,
+    trial_id = seq_along(session_data$spks),
+    contrast_left = session_data$contrast_left,
+    contrast_right = session_data$contrast_right,
+    feedback_type = session_data$feedback_type,
+    contrast_diff = abs(session_data$contrast_left - session_data$contrast_right), 
+    success = as.numeric(session_data$feedback_type == 1)  
+  ) %>%
+    bind_cols(as_tibble(do.call(rbind, lapply(session_data$spks, colMeans))) %>% setNames(bin_names))
+})
+
+# Select only numerical spike bin columns for PCA
+pca_input <- full_function_tibble %>%
+  select(all_of(bin_names))  # Select only spike rate bins
+
+# Standardize for PCA
+pca_result <- prcomp(pca_input, center = TRUE, scale. = TRUE)
+
+# Converting the results into data frame
+pca_df <- as_tibble(pca_result$x) %>%
+  mutate(session_id = full_function_tibble$session_id, mouse_name = full_function_tibble$mouse_name)
+
+# PCA Visualization by Session
+ggplot(pca_df, aes(x = PC1, y = PC2, color = as.factor(session_id))) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC1 vs PC2 (Session)", color = "Session ID") +
+  theme_minimal()
+
+# PCA Visualization by Mouse
+ggplot(pca_df, aes(x = PC1, y = PC2, color = mouse_name)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC1 vs PC2 (Mouse)", color = "Mouse Name") +
+  theme_minimal()
+
+# Visualization PC3 vs PC4 (Session)
+ggplot(pca_df, aes(x = PC3, y = PC4, color = as.factor(session_id))) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC3 vs PC4 (Session)", color = "Session ID") +
+  theme_minimal()
+
+# Visualization PC3 vs PC4 (Mouse)
+ggplot(pca_df, aes(x = PC3, y = PC4, color = mouse_name)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "PCA: PC3 vs PC4 (Mouse)", color = "Mouse Name") +
+  theme_minimal()
+
+# Selecting the predictive features 
+predictive_features <- c("session_id", "trial_id", "contrast_left", "contrast_right", "contrast_diff", bin_names)
+
+y <- as.factor(full_function_tibble$success)
+
+# Preparing the final data set for modeling
+predictive_data <- full_function_tibble %>%
+  select(all_of(predictive_features)) %>%
+  mutate(trial_id = as.numeric(trial_id))  # Convert trial_id to numeric
+
+# Converting to matrix 
+X <- model.matrix(~., data = predictive_data)
+
+# Split into Training and Testing, (80-20 split)
+set.seed(123)
+train_index <- createDataPartition(y, p = 0.8, list = FALSE)
+
+X_train <- as.data.frame(X[train_index, ])
+y_train <- y[train_index]
+X_test <- as.data.frame(X[-train_index, ])
+y_test <- y[-train_index]
+
+# Logistic regression model
+log_model <- glm(y_train ~ ., data = X_train, family = "binomial")
+
+# Predictions
+predictions <- predict(log_model, newdata = X_test, type = "response")
+predicted_labels <- ifelse(predictions > 0.5, 1, 0)
+
+# Accuracy
+accuracy <- mean(predicted_labels == y_test)
+print(paste("Model Accuracy:", round(accuracy, 4)))
+
+# ROC Curve and AUC
+roc_curve <- roc(y_test, predictions)
+plot(roc_curve, main = "ROC Curve")
+auc(roc_curve)
+
+misclassification_rate <- 1 - accuracy
+print(paste("Misclassification Rate:", round(misclassification_rate, 4)))
+
+# Converting data to matrix format
+X_train_mat <- as.matrix(X_train)
+X_test_mat <- as.matrix(X_test)
+
+# Converting target variable to numeric 
+y_train_xgb <- as.numeric(as.character(y_train))
+y_test_xgb <- as.numeric(as.character(y_test))
+
+xgb_model <- xgboost(data = X_train_mat, 
+                     label = y_train_xgb, 
+                     max_depth = 6, 
+                     eta = 0.1, 
+                     nrounds = 20, 
+                     gamma = 1, 
+                     lambda = 2, 
+                     alpha = 1,
+                     objective = "binary:logistic",
+                     eval_metric = "logloss",
+                     verbose = 1)
+
+train_predictions <- predict(xgb_model, X_train_mat)
+
+train_pred_labels <- ifelse(train_predictions > 0.5, 1, 0)
+
+# Compute Accuracy
+train_accuracy <- mean(train_pred_labels == y_train_xgb)
+
+
+
+# Compute Misclassification Rate
+train_misclassification <- 1 - train_accuracy
+
+print(paste("XGBoost Model Accuracy:", round(train_accuracy, 4)))
+print(paste("XGBoost Misclassification Rate:", round(train_misclassification, 4)))
+
+# Computing the ROC & AUC
+train_roc_curve <- roc(y_train_xgb, train_predictions)
+train_auc <- auc(train_roc_curve)
+
+# AUC Score
+print(paste("XGBoost Model AUC:", round(train_auc, 4)))
+
+# ROC Curve
+plot(train_roc_curve, main = "XGBoost ROC Curve on Training Data")
+
+testing = list()
+# Use a loop to load in the testing data
+for(i in 1:2){
+  testing[[i]] <- readRDS(paste0("~/Downloads/test (1)/test", i, ".rds"))
+}
+
+# Extract the test data to a data frame
+test_data <- map_dfr(seq_along(testing), function(i) {
+  tibble(
+    session_id = i,
+    contrast_left = testing[[i]]$contrast_left,
+    contrast_right = testing[[i]]$contrast_right,
+    contrast_diff = abs(testing[[i]]$contrast_left - testing[[i]]$contrast_right),
+    feedback_type = testing[[i]]$feedback_type
+  ) %>%
+    bind_cols(as_tibble(do.call(rbind, lapply(testing[[i]]$spks, colMeans))) %>% 
+                setNames(paste0("bin", seq_len(ncol(testing[[i]]$spks[[1]])))))
+})
+
+test_data$trial_id <- seq_len(nrow(test_data))  # Add trial ID
+X_new_test <- model.matrix(~., data = test_data %>% select(-feedback_type)) 
+y_new_test <- as.factor(test_data$feedback_type == 1)  # Convert success/fail
+
+# Predictions on test data
+test_predictions <- predict(xgb_model, X_test_mat)
+
+# Convert probabilities to binary label
+test_pred_labels <- ifelse(test_predictions > 0.5, 1, 0)
+
+# Compute Accuracy + the misclassification rate
+test_accuracy <- mean(test_pred_labels == y_test_xgb)
+test_misclassification <- 1 - test_accuracy
+
+print(paste("XGBoost Model Accuracy on the Test Set:", round(test_accuracy, 4)))
+print(paste("XGBoost Misclassification Rate on the Test Set:", round(test_misclassification, 4)))
+
+# Compute ROC & AUC
+test_roc_curve <- roc(y_test_xgb, test_predictions)
+test_auc <- auc(test_roc_curve)
+
+# Print AUC Score, ROC Curve
+print(paste("XGBoost Model AUC on Test Set:", round(test_auc, 4)))
+plot(test_roc_curve, main = "ROC Curve : XGBoost on Test Data")
+
+confusion_matrix <- confusionMatrix(factor(test_pred_labels), factor(y_test_xgb))
+confusion_table <- as.data.frame(confusion_matrix$table)
+
+# For more clarity let's rename the column names
+colnames(confusion_table) <- c("Predicted", "Actual", "Count")
+
+# Heat map for visualization
+ggplot(data = confusion_table, aes(x = Actual, y = Predicted, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "black", size = 5) +  
+  scale_fill_gradient(low = "white", high = "blue") +  # Gradient color
+  labs(title = "Confusion Matrix Heatmap", x = "Actual", y = "Predicted") +
+  theme_minimal()
+
+body {
+  font-size: 18px;
+  line-height: 1.8;
+  max-width: 1100px;
+  margin: auto;
+}
+
+h1 {
+  font-size: 32px;
+  margin-top: 40px;
+}
+
+h2 {
+  font-size: 28px;
+  margin-top: 30px;
+}
+
+h3 {
+  font-size: 24px;
+  margin-top: 25px;
+}
+
+p {
+  font-size: 18px;
+  margin-bottom: 20px;
+}
+
+pre {
+  font-size: 16px;
+  line-height: 1.5;
+  padding: 15px;
+}
+
+.table {
+  font-size: 16px;
+  width: 100%;
+}
